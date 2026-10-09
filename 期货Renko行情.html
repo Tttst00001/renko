@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>期货 Renko(ATR6) 行情</title>
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: #0d1117;
+        color: #d0d7de;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* 顶栏 */
+    header {
+        flex: 0 0 auto;
+        background: #161b22;
+        border-bottom: 1px solid #30363d;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        -webkit-app-region: no-drag;
+    }
+    .title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #e6edf3;
+        white-space: nowrap;
+        letter-spacing: .5px;
+    }
+    .title small { color: #8b949e; font-weight: 400; margin-left: 4px; }
+    #code {
+        flex: 1;
+        min-width: 0;
+        background: #0d1117;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        color: #e6edf3;
+        font-size: 15px;
+        padding: 7px 10px;
+        outline: none;
+        text-transform: uppercase;
+    }
+    #code:focus { border-color: #388bfd; }
+    #go {
+        flex: 0 0 auto;
+        background: #388bfd;
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        font-size: 14px;
+        padding: 8px 16px;
+        cursor: pointer;
+        font-weight: 600;
+    }
+    #go:active { background: #1f6feb; }
+
+    #msg {
+        flex: 0 0 auto;
+        min-height: 0;
+        padding: 0 12px;
+        font-size: 13px;
+        color: #f85149;
+        line-height: 1.6;
+        background: rgba(248,81,73,.08);
+        border-bottom: 1px solid rgba(248,81,73,.2);
+        display: none;
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+
+    /* 图表区 */
+    #kline { flex: 1 1 auto; min-height: 0; position: relative; width: 100%; }
+</style>
+</head>
+<body>
+
+<header>
+    <div class="title">期货 · Renko<small>ATR6 砖</small></div>
+    <input id="code" type="text" placeholder="代码如 RB0 / RB2510 / AU0" autocomplete="off" spellcheck="false">
+    <button id="go" type="button">查询</button>
+</header>
+<div id="msg"></div>
+<div id="kline"></div>
+
+<!-- HQChart 库（本地） -->
+<script src="lib/jquery.min.js"></script>
+<script src="lib/umychart.console.js"></script>
+<script src="lib/umychart.network.js"></script>
+<script src="lib/umychart.js"></script>
+<script src="lib/umychart.complier.js"></script>
+<script src="lib/umychart.index.data.js"></script>
+<script src="lib/umychart.style.js"></script>
+<script src="lib/umychart.popMenu.js"></script>
+<script src="lib/umychart.DialogDrawTool.js"></script>
+<script src="lib/umychart.PopMinuteChart.js"></script>
+<script src="lib/umychart.PopKLineChart.js"></script>
+<script src="lib/umychart.report.js"></script>
+<script src="lib/umychart.keyboard.js"></script>
+<script src="lib/umychart.PopKeyboard.js"></script>
+<script src="lib/umychart.DialogTooltip.js"></script>
+<script src="lib/umychart.DialogSelectRect.js"></script>
+<script src="lib/umychart.DialogSearchIndex.js"></script>
+<script src="lib/umychart.deal.js"></script>
+<script src="lib/umychart.StockInfo.js"></script>
+<script src="lib/umychart.StatusBar.js"></script>
+<script src="lib/umychart.ScrollText.js"></script>
+<script src="lib/umychart.order.js"></script>
+<script src="lib/umychart.version.js"></script>
+
+<script>
+(function () {
+    'use strict';
+
+    /* ============ 1. 期货代码 → 交易所后缀映射（新浪内盘期货） ============ */
+    var EXCHANGE_MAP = {
+        SHFE: ['cu','al','zn','pb','ni','sn','au','ag','rb','wr','hc','fu','bu','ru','sp','ss','ao','br'],
+        INE:  ['sc','lu','nr','ec','bc'],
+        DCE:  ['a','b','c','m','y','p','fb','bb','jd','l','v','pp','jm','j','i','eg','eb','cs','pg','rr','lh'],
+        CZCE: ['sr','ta','ma','cf','fg','rm','oi','ri','wh','pm','lr','jr','pk','cy','ap','sf','sm','sa','ur','cj','px'],
+        CFFEX:['if','ih','ic','im','t','tf','ts'],
+        GFEX: ['si','lc']
+    };
+    var PREFIX_EXCHANGE = {};
+    (function () {
+        for (var ex in EXCHANGE_MAP) {
+            var list = EXCHANGE_MAP[ex];
+            for (var i = 0; i < list.length; i++) PREFIX_EXCHANGE[list[i]] = ex;
+        }
+    })();
+
+    /* 规范化输入: "rb0" / "RB0" / "rb2510" / "RB2510.SHFE" → { sina, hq, name } */
+    function normalizeCode(input) {
+        if (!input) return null;
+        var s = String(input).trim().toUpperCase();
+        // 去掉可能的交易所后缀
+        s = s.replace(/\.(SHFE|INE|DCE|CZCE|CFFEX|GFEX)$/, '');
+        var m = s.match(/^([A-Z]+)(\d+)$/);
+        if (!m) return null;
+        var prefix = m[1].toLowerCase();
+        var suffix = PREFIX_EXCHANGE[prefix];
+        if (!suffix) return null;
+        return { sina: s, hq: s + '.' + suffix };
+    }
+
+    /* ============ 2. 新浪期货日K jsonp 加载（script 标签，跨域可用） ============ */
+    function loadSinaDaily(symbol, cb) {
+        var varName = 'hq_daily_' + symbol.replace(/[^A-Z0-9]/g, '_');
+        var url = 'https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20' + varName +
+                  '=/InnerFuturesNewService.getDailyKLine?symbol=' + symbol;
+
+        var old = document.getElementById('sina_' + varName);
+        if (old) { old.parentNode.removeChild(old); }
+        if (window[varName]) { try { delete window[varName]; } catch (e) { window[varName] = null; } }
+
+        var finished = false;
+        var timer = setTimeout(function () { if (!finished) { finished = true; cb(null); } }, 30000);
+
+        function done(raw) {
+            if (finished) return;
+            finished = true;
+            clearTimeout(timer);
+            if (window[varName]) { try { delete window[varName]; } catch (e) { window[varName] = null; } }
+            var el = document.getElementById('sina_' + varName);
+            if (el) { el.parentNode.removeChild(el); }
+            cb(raw && raw.length ? raw : null);
+        }
+
+        var s = document.createElement('script');
+        s.id = 'sina_' + varName;
+        s.src = url;
+        s.onload = function () { done(window[varName]); };
+        s.onerror = function () { done(null); };
+        document.body.appendChild(s);
+    }
+
+    /* 新浪日K → HQChart 数组: [date, yclose, open, high, low, close, vol, amount, hold, settle, ysettle] */
+    function sinaToHQ(raw) {
+        var out = [];
+        var prevClose = null;
+        for (var i = 0; i < raw.length; i++) {
+            var it = raw[i];
+            var d = parseInt(it.d.replace(/-/g, ''), 10);
+            var o = parseFloat(it.o), h = parseFloat(it.h), l = parseFloat(it.l), c = parseFloat(it.c);
+            var v = parseFloat(it.v);
+            var hold = it.p !== undefined && it.p !== '' ? parseFloat(it.p) : null;
+            var settle = it.s !== undefined && it.s !== '' && parseFloat(it.s) > 0 ? parseFloat(it.s) : null;
+            var yc = prevClose !== null ? prevClose : o;
+            out.push([d, yc, o, h, l, c, v, null, isFinite(hold) ? hold : null, isFinite(settle) ? settle : null, prevClose !== null ? prevClose : null]);
+            prevClose = c;
+        }
+        return out;
+    }
+
+    /* ============ 3. 自定义指标（覆盖内置，页面级） ============ */
+    // 成交量：仅成交量柱（主图 Renko + 副图 VOL，无 KDJ）
+    if (typeof g_CustomIndex !== 'undefined' && g_CustomIndex.Add) {
+        g_CustomIndex.Add({
+            ID: 'VOL',
+            Name: 'VOL',
+            Description: '成交量',
+            IsMainIndex: false,
+            FloatPrecision: 0,
+            Script: 'VOL:VOL,VOLSTICK;'
+        });
+    }
+
+    /* ============ 4. 页面状态与图表 ============ */
+    var chart = null;
+    var divKLine = document.getElementById('kline');
+    var msgBox = document.getElementById('msg');
+    var input = document.getElementById('code');
+    var goBtn = document.getElementById('go');
+    var currentSymbol = null;
+
+    var msgTimer = null;
+    function showMsg(text, isError) {
+        msgBox.style.display = 'block';
+        msgBox.textContent = text;
+        msgBox.style.color = isError === false ? '#7ee787' : '#f85149';
+        if (msgTimer) clearTimeout(msgTimer);
+        msgTimer = setTimeout(function () { msgBox.style.display = 'none'; }, 8000);
+    }
+
+    /* 加载中的转圈提示由 SplashTitle 负责 */
+
+    function createChart(info) {
+        // 深色风格
+        var blackStyle = HQChartStyle.GetStyleConfig(STYLE_TYPE_ID.BLACK_ID);
+        JSChart.SetStyle(blackStyle);
+        divKLine.style.backgroundColor = blackStyle.BGColor;
+
+        chart = JSChart.Init(divKLine, false, true);
+        window.__chart = chart;   // 调试用：暴露图表实例
+
+        var option = {
+            Type: '历史K线图',
+
+            Symbol: info.hq,
+
+            // Renko 砖大小 = ATR(6) 动态计算
+            KLineCalcOption: [
+                { ClassName: 'RenkoCalculate', Option: { BrickSizeType: 1, ATR: { Count: 6 } } }
+            ],
+
+            Windows: [
+                { Index: 'EMPTY' },     // 主图窗口（Renko K线），不绑定指标
+                { Index: 'VOL' }        // 副图1 成交量
+            ],
+
+            IsShowRightMenu: false,
+            IsShowCorssCursorInfo: true,
+            SplashTitle: '加载数据中...',
+
+            KLineTitle: {
+                IsShowName: true,
+                IsShowSettingInfo: false,
+                IsTitleShowLatestData: true
+            },
+
+            KLine: {
+                DragMode: 1,               // 数据拖拽
+                Right: 0,                  // 不复权（期货无需复权）
+                Period: 0,                 // 日线
+                MaxRequestDataCount: 2000,
+                DrawType: 10,              // 10 = Renko 砖形图
+                IsShowTooltip: false,
+                DataWidth: 18              // 砖宽 20px：HQChart 取"第一个≤target档的上一档"，传18落到 [20,7]
+            },
+
+            Frame: [
+                { SplitCount: 6 },         // 主图 Renko（Y轴刻度）
+                { SplitCount: 2 }          // 副图1 成交量
+            ],
+
+            Border: { Left: 5, Right: 5, Top: 24, Bottom: 24 },
+
+            /* ---- 第三方数据对接：新浪期货日K ---- */
+            NetworkFilter: function (data, callback) {
+                try {
+                    if (data && data.Name === 'KLineChartContainer::RequestHistoryData') {
+                        data.PreventDefault = true;          // 阻止 HQChart 默认网络请求
+                        var req = data.Request || {};
+                        var hqSymbol = req.symbol || (currentSymbol && currentSymbol.hq) || 'RB0.SHFE';
+                        var sinaSymbol = hqSymbol.split('.')[0];
+                        loadSinaDaily(sinaSymbol, function (raw) {
+                            if (!raw || !raw.length) {
+                                showMsg('新浪数据加载失败，请检查代码或稍后重试');
+                                callback({ code: -1, message: '新浪数据加载失败' });
+                                return;
+                            }
+                            var kData = sinaToHQ(raw);
+                            var count = req.count > 0 ? req.count : 2000;
+                            if (kData.length > count) kData = kData.slice(kData.length - count);
+                            callback({
+                                code: 0,
+                                data: kData,
+                                symbol: hqSymbol,
+                                name: sinaSymbol,
+                                count: kData.length,
+                                start: 0,
+                                end: kData.length
+                            });
+                            applySquareBricks(true);   // 数据绑定完成后，设置砖高=砖宽(正方形)
+                        });
+                        return;
+                    }
+                } catch (e) {
+                    console.error('[NF] exception:', e);
+                    if (callback) callback({ code: -1, message: 'NetworkFilter error' });
+                    return;
+                }
+                return false;
+            }
+        };
+
+        chart.SetOption(option);
+        chart.OnSize();
+
+        // 缩放（滚轮/双指）会改变砖宽，wrap 缩放方法保持砖高=砖宽（正方形）
+        var mainFrame = chart.JSChartContainer.Frame.SubFrame[0].Frame;
+        var zUp = mainFrame.ZoomUp, zDown = mainFrame.ZoomDown;
+        if (typeof zUp === 'function') {
+            mainFrame.ZoomUp = function (idx, arg) {
+                var r = zUp.call(this, idx, arg);
+                applySquareBricks(false);
+                return r;
+            };
+        }
+        if (typeof zDown === 'function') {
+            mainFrame.ZoomDown = function (idx, arg) {
+                var r = zDown.call(this, idx, arg);
+                applySquareBricks(false);
+                return r;
+            };
+        }
+    }
+
+    function changeSymbol(info) {
+        if (!chart) {
+            createChart(info);
+        } else {
+            chart.ChangeSymbol(info.hq);
+        }
+    }
+
+    /* ============ 砖块正方形联动：砖高 = 砖宽（20×20，缩放后等比保持） ============ */
+    function applySquareBricks(needRedraw) {
+        if (!chart) return;
+        var cc = chart.JSChartContainer;
+        if (!cc || !cc.KLineCalculate) return;
+        var brick = cc.KLineCalculate.ATR && cc.KLineCalculate.ATR.BrickSize;
+        if (!brick || !isFinite(Number(brick))) return;
+
+        if (needRedraw !== false) chart.OnSize();   // 先稳定布局再读主图高度
+
+        var frame = cc.Frame.SubFrame[0].Frame;
+        var W = frame.DataWidth;                    // 当前砖宽（px）
+        var H = frame.ChartBorder.GetHeightEx();    // 主图窗口高度（px）
+        if (!W || !H) return;
+
+        // 最新砖收盘价
+        var paint = cc.ChartPaint[0];
+        var last = null;
+        if (paint && paint.Data && paint.Data.Data && paint.Data.Data.length) {
+            last = paint.Data.Data[paint.Data.Data.length - 1].Close;
+        }
+        if (last == null) return;
+
+        // Y轴价格范围 = 砖高W像素对应的跨度 → 每块砖高 = W px，砖为正方形
+        // YSpecificMaxMin 是主图固定Y轴范围的官方入口：砖位置与刻度都以此为基准
+        var range = Number(brick) * H / W;
+        var ymm = { Max: last + range / 2, Min: last - range / 2 };
+        frame.YSpecificMaxMin = ymm;
+        if (frame.YSplitOperator) frame.YSplitOperator.FixedYMaxMin = ymm;
+
+        if (typeof cc.UpdateFrameMaxMin === 'function') cc.UpdateFrameMaxMin();
+        if (needRedraw !== false) chart.OnSize();
+    }
+
+    function doQuery() {
+        var info = normalizeCode(input.value);
+        if (!info) {
+            showMsg('代码格式不正确。示例：RB0（螺纹主连）、RB2510（螺纹2510合约）、AU0、IF0、SC0');
+            return;
+        }
+        currentSymbol = info;
+        input.value = info.sina;
+        showMsg('加载 ' + info.sina + ' ...', false);
+        changeSymbol(info);
+    }
+
+    goBtn.addEventListener('click', doQuery);
+    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doQuery(); });
+
+    window.addEventListener('resize', function () {
+        if (chart) {
+            chart.OnSize();
+            applySquareBricks(true);
+        }
+    });
+
+    /* 首次默认加载螺纹钢主连 */
+    var def = normalizeCode('RB0');
+    if (def) {
+        currentSymbol = def;
+        input.value = def.sina;
+        createChart(def);
+    }
+})();
+</script>
+</body>
+</html>
